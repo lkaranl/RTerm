@@ -1,5 +1,5 @@
 // Shader para renderização de células do terminal
-// Otimizado para Apple Silicon
+// Otimizado para legibilidade com Gamma Correction
 
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -32,15 +32,19 @@ var s_glyph: sampler;
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Background
-    var color = in.bg_color;
-    
-    // Se houver UV válido, aplica o glyph
+    // 1. Amostra do glyph (alpha map)
+    var alpha = 0.0;
     if (in.tex_coords.x > 0.0 || in.tex_coords.y > 0.0) {
-        let glyph = textureSample(t_glyph, s_glyph, in.tex_coords);
-        // Blend foreground sobre background usando alpha do glyph
-        color = mix(in.bg_color, in.fg_color, glyph.a);
+        alpha = textureSample(t_glyph, s_glyph, in.tex_coords).a;
+        
+        // Sharpening leve / Gamma correction para texto
+        // Isso faz o texto parecer mais "bold" e nítido
+        alpha = pow(alpha, 1.0 / 1.4); 
     }
+
+    // 2. Mistura background e foreground
+    // Mix linear: bg * (1 - alpha) + fg * alpha
+    var color = mix(in.bg_color, in.fg_color, alpha);
     
     return color;
 }

@@ -5,7 +5,7 @@ pub mod glyph;
 
 use anyhow::Result;
 use wgpu::util::DeviceExt;
-use crate::config::{BG_COLOR, CELL_WIDTH, CELL_HEIGHT};
+use crate::config::{BG_COLOR, CELL_WIDTH, CELL_HEIGHT, PADDING_X, PADDING_Y, CURSOR_COLOR, CURSOR_TEXT_COLOR};
 use crate::term::Grid;
 use glyph::GlyphCache;
 
@@ -50,6 +50,9 @@ pub struct Renderer {
     pub size: winit::dpi::PhysicalSize<u32>,
     vertices: Vec<Vertex>,
     indices: Vec<u32>,
+    // Estado do cursor
+    cursor_visible: bool,
+    last_blink: std::time::Instant,
 }
 
 impl Renderer {
@@ -219,6 +222,8 @@ impl Renderer {
             size,
             vertices: Vec::new(),
             indices: Vec::new(),
+            cursor_visible: true,
+            last_blink: std::time::Instant::now(),
         })
     }
 
@@ -231,15 +236,28 @@ impl Renderer {
         }
     }
 
-    /// Calcula dimensões do grid baseado no tamanho da janela
+    /// Calcula dimensões do grid baseado no tamanho da janela (com padding)
     pub fn grid_dimensions(&self) -> (usize, usize) {
-        let cols = (self.size.width as f32 / CELL_WIDTH) as usize;
-        let rows = (self.size.height as f32 / CELL_HEIGHT) as usize;
+        let usable_width = self.size.width as f32 - (PADDING_X * 2.0);
+        let usable_height = self.size.height as f32 - (PADDING_Y * 2.0);
+        let cols = (usable_width / CELL_WIDTH) as usize;
+        let rows = (usable_height / CELL_HEIGHT) as usize;
         (cols.max(1), rows.max(1))
+    }
+
+    /// Atualiza estado de blink do cursor
+    fn update_cursor_blink(&mut self) {
+        let elapsed = self.last_blink.elapsed().as_millis() as u64;
+        if elapsed >= crate::config::CURSOR_BLINK_RATE_MS {
+            self.cursor_visible = !self.cursor_visible;
+            self.last_blink = std::time::Instant::now();
+        }
     }
 
     /// Renderiza o grid
     pub fn render(&mut self, grid: &Grid) -> Result<()> {
+        self.update_cursor_blink();
+        
         let output = self.surface.get_current_texture()?;
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -317,9 +335,9 @@ impl Renderer {
                     continue;
                 }
 
-                // Coordenadas em clip space (-1 a 1)
-                let px = x as f32 * CELL_WIDTH;
-                let py = y as f32 * CELL_HEIGHT;
+                // Coordenadas em clip space (-1 a 1) com padding
+                let px = PADDING_X + x as f32 * CELL_WIDTH;
+                let py = PADDING_Y + y as f32 * CELL_HEIGHT;
                 
                 let x0 = px * scale_x - 1.0;
                 let y0 = 1.0 - py * scale_y;
@@ -371,50 +389,52 @@ impl Renderer {
             }
         }
 
-        // Cursor
-        let cx = grid.cursor_x;
-        let cy = grid.cursor_y;
-        if cx < grid.cols && cy < grid.rows {
-            let px = cx as f32 * CELL_WIDTH;
-            let py = cy as f32 * CELL_HEIGHT;
-            
-            let x0 = px * scale_x - 1.0;
-            let y0 = 1.0 - py * scale_y;
-            let x1 = (px + CELL_WIDTH) * scale_x - 1.0;
-            let y1 = 1.0 - (py + CELL_HEIGHT) * scale_y;
+        // Cursor (com blink)
+        if self.cursor_visible {
+            let cx = grid.cursor_x;
+            let cy = grid.cursor_y;
+            if cx < grid.cols && cy < grid.rows {
+                let px = PADDING_X + cx as f32 * CELL_WIDTH;
+                let py = PADDING_Y + cy as f32 * CELL_HEIGHT;
+                
+                let x0 = px * scale_x - 1.0;
+                let y0 = 1.0 - py * scale_y;
+                let x1 = (px + CELL_WIDTH) * scale_x - 1.0;
+                let y1 = 1.0 - (py + CELL_HEIGHT) * scale_y;
 
-            let base = self.vertices.len() as u32;
-            let cursor_color = [0.973, 0.973, 0.949, 0.7]; // Semi-transparente
+                let base = self.vertices.len() as u32;
 
-            self.vertices.push(Vertex {
-                position: [x0, y0],
-                tex_coords: [0.0, 0.0],
-                fg_color: BG_COLOR,
-                bg_color: cursor_color,
-            });
-            self.vertices.push(Vertex {
-                position: [x1, y0],
-                tex_coords: [0.0, 0.0],
-                fg_color: BG_COLOR,
-                bg_color: cursor_color,
-            });
-            self.vertices.push(Vertex {
-                position: [x1, y1],
-                tex_coords: [0.0, 0.0],
-                fg_color: BG_COLOR,
-                bg_color: cursor_color,
-            });
-            self.vertices.push(Vertex {
-                position: [x0, y1],
-                tex_coords: [0.0, 0.0],
-                fg_color: BG_COLOR,
-                bg_color: cursor_color,
-            });
+                // Cursor block elegante com a cor do tema
+                self.vertices.push(Vertex {
+                    position: [x0, y0],
+                    tex_coords: [0.0, 0.0],
+                    fg_color: CURSOR_TEXT_COLOR,
+                    bg_color: CURSOR_COLOR,
+                });
+                self.vertices.push(Vertex {
+                    position: [x1, y0],
+                    tex_coords: [0.0, 0.0],
+                    fg_color: CURSOR_TEXT_COLOR,
+                    bg_color: CURSOR_COLOR,
+                });
+                self.vertices.push(Vertex {
+                    position: [x1, y1],
+                    tex_coords: [0.0, 0.0],
+                    fg_color: CURSOR_TEXT_COLOR,
+                    bg_color: CURSOR_COLOR,
+                });
+                self.vertices.push(Vertex {
+                    position: [x0, y1],
+                    tex_coords: [0.0, 0.0],
+                    fg_color: CURSOR_TEXT_COLOR,
+                    bg_color: CURSOR_COLOR,
+                });
 
-            self.indices.extend_from_slice(&[
-                base, base + 1, base + 2,
-                base, base + 2, base + 3,
-            ]);
+                self.indices.extend_from_slice(&[
+                    base, base + 1, base + 2,
+                    base, base + 2, base + 3,
+                ]);
+            }
         }
     }
 }
